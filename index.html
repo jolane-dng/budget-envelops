@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Enveloppes</title>
+<meta name="theme-color" content="#1B2420">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Enveloppes">
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; background:#1B2420; color:#F4EFE1; font-family: Georgia, 'Times New Roman', serif;
+    padding: 24px 16px 90px; -webkit-tap-highlight-color: transparent; }
+  .mono { font-family: 'SF Mono', Consolas, Menlo, monospace; }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { font-size: 13px; color:#9C9584; margin: 0 0 20px; }
+  .tabs { display:flex; gap:6px; margin-bottom:20px; border-bottom:1px solid #3A4238; overflow-x:auto; }
+  .tab { padding:8px 12px; font-size:14px; color:#8B8574; background:none; border:none;
+    border-bottom:2px solid transparent; cursor:pointer; white-space:nowrap; }
+  .tab.active { color:#F4EFE1; border-bottom-color:#8AA624; }
+  .card { background:#F4EFE1; color:#2A2723; border-radius:3px; padding:18px 20px; margin-bottom:14px;
+    position:relative; box-shadow:0 4px 10px rgba(0,0,0,.25); }
+  .flap { position:absolute; top:0; left:0; right:0; height:22px; opacity:.9;
+    clip-path: polygon(0 0, 50% 60%, 100% 0); border-radius:3px 3px 0 0; }
+  .label { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#8B8574; }
+  .bignum { font-size:30px; font-weight:700; }
+  input { width:100%; background:#EDE6D2; border:1px solid #D8CFB8; border-radius:3px;
+    padding:8px 10px; font-size:14px; color:#2A2723; font-family:'SF Mono',Consolas,Menlo,monospace; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row-between { display:flex; justify-content:space-between; align-items:center; }
+  button.btn { background:#2A2723; color:#F4EFE1; border:none; border-radius:3px; padding:9px 14px;
+    font-size:13px; cursor:pointer; font-family:'SF Mono',Consolas,Menlo,monospace; }
+  button.ghost { background:transparent; color:#8B8574; border:1px solid #3A4238; border-radius:3px;
+    padding:6px 10px; font-size:12px; cursor:pointer; font-family:'SF Mono',Consolas,Menlo,monospace; }
+  button.danger { background:transparent; color:#C1502E; border:1px solid #C1502E; border-radius:3px;
+    padding:5px 9px; font-size:11px; cursor:pointer; font-family:'SF Mono',Consolas,Menlo,monospace; }
+  .divider { height:1px; background:#D8CFB8; margin:12px 0; }
+  .track { height:10px; background:#DED4B8; border-radius:5px; overflow:hidden; margin-top:8px; }
+  .fill { height:100%; transition:width .3s; }
+  .field { margin-bottom:10px; }
+  .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:center;
+    justify-content:center; padding:20px; z-index:50; }
+  .modal { width:100%; max-width:360px; }
+  .txline { display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px; }
+  .subrow { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #E4DDC8; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Enveloppes</h1>
+  <div class="sub mono" id="monthLabel"></div>
+  <div class="tabs" id="tabs"></div>
+  <div id="content"></div>
+</div>
+<div id="modalRoot"></div>
+
+<script>
+const COLORS = ["#8AA624","#4C8577","#B5651D","#6B5B95","#9C4A4A","#3C6E71","#A67C52","#5B7DB1"];
+const uid = () => Math.random().toString(36).slice(2,10);
+const eur = n => (Math.round((n+Number.EPSILON)*100)/100).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2}) + ' \u20ac';
+const todayISO = () => new Date().toISOString().slice(0,10);
+const monthKey = (d=new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+
+const DEFAULT_DATA = { income: 0, subscriptions: [], envelopes: [], transactions: [] };
+function loadData() {
+  try {
+    const raw = localStorage.getItem('budget-enveloppes-data');
+    return raw ? JSON.parse(raw) : structuredClone(DEFAULT_DATA);
+  } catch(e) { return structuredClone(DEFAULT_DATA); }
+}
+function saveData() { localStorage.setItem('budget-enveloppes-data', JSON.stringify(data)); }
+
+let data = loadData();
+let tab = 'apercu';
+let openEnvelopeId = null;
+let expenseFor = null;
+
+function totalSubs() { return data.subscriptions.reduce((s,x)=>s+Number(x.amount||0),0); }
+function totalEnvBudget() { return data.envelopes.reduce((s,x)=>s+Number(x.budget||0),0); }
+function remainingAfterSubs() { return Number(data.income||0) - totalSubs(); }
+function unallocated() { return remainingAfterSubs() - totalEnvBudget(); }
+function monthTx() { const mk = monthKey(); return data.transactions.filter(t=>t.date.slice(0,7)===mk); }
+function spentByEnvelope(id) { return monthTx().filter(t=>t.envelopeId===id).reduce((s,t)=>s+Number(t.amount),0); }
+function totalSpent() { return monthTx().reduce((s,t)=>s+Number(t.amount),0); }
+
+function addSubscription(name, amount) {
+  if (!name.trim() || !amount || Number(amount) <= 0) return;
+  data.subscriptions.push({ id: uid(), name: name.trim(), amount: Number(amount) });
+  saveData(); render();
+}
+function removeSubscription(id) {
+  data.subscriptions = data.subscriptions.filter(s=>s.id!==id);
+  saveData(); render();
+}
+function addEnvelope(name, budget) {
+  if (!name.trim() || budget === '' || Number(budget) < 0) return;
+  const color = COLORS[data.envelopes.length % COLORS.length];
+  data.envelopes.push({ id: uid(), name: name.trim(), budget: Number(budget), color });
+  saveData(); render();
+}
+function removeEnvelope(id) {
+  data.envelopes = data.envelopes.filter(e=>e.id!==id);
+  data.transactions = data.transactions.filter(t=>t.envelopeId!==id);
+  saveData(); render();
+}
+function addTransaction(envelopeId, amount, note) {
+  if (!amount || Number(amount) <= 0) return;
+  data.transactions.unshift({ id: uid(), envelopeId, amount: Number(amount), note: note.trim(), date: todayISO() });
+  saveData(); expenseFor = null; render();
+}
+function removeTransaction(id) {
+  data.transactions = data.transactions.filter(t=>t.id!==id);
+  saveData(); render();
+}
+function setIncome(v) { data.income = Number(v) || 0; saveData(); render(); }
+
+function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+
+function render() {
+  document.getElementById('monthLabel').textContent =
+    new Date().toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
+
+  document.getElementById('tabs').innerHTML = [
+    ['apercu','Aper\u00e7u'], ['enveloppes','Enveloppes'], ['abonnements','Abonnements'], ['revenu','Revenu']
+  ].map(([id,label]) => `<button class="tab ${tab===id?'active':''}" data-tab="${id}">${label}</button>`).join('');
+
+  document.getElementById('content').innerHTML =
+    tab === 'apercu' ? renderApercu() :
+    tab === 'enveloppes' ? renderEnveloppes() :
+    tab === 'abonnements' ? renderAbonnements() :
+    renderRevenu();
+
+  renderModal();
+  bindEvents();
+}
+
+function renderApercu() {
+  const rem = remainingAfterSubs(), un = unallocated();
+  let html = `
+  <div class="card">
+    <div class="label">Revenu approximatif</div>
+    <div class="bignum mono">${eur(data.income||0)}</div>
+    <div class="divider"></div>
+    <div class="row-between mono" style="font-size:13px;">
+      <span>Abonnements (${data.subscriptions.length})</span><span>&minus; ${eur(totalSubs())}</span>
+    </div>
+    <div class="row-between mono" style="font-size:13px;margin-top:4px;">
+      <span>D\u00e9pens\u00e9 ce mois-ci</span><span>&minus; ${eur(totalSpent())}</span>
+    </div>
+    <div class="divider"></div>
+    <div class="label">Disponible apr\u00e8s abonnements</div>
+    <div class="bignum mono" style="color:${rem<0?'#C1502E':'#3B6D11'}">${eur(rem)}</div>
+    <div class="mono" style="font-size:12px;margin-top:6px;color:${un<0?'#C1502E':'#8B8574'}">
+      ${un>=0 ? eur(un)+' non affect\u00e9s \u00e0 une enveloppe' : eur(Math.abs(un))+' de budget enveloppes en trop'}
+    </div>
+  </div>`;
+
+  if (data.envelopes.length === 0) {
+    html += `<div class="card" style="text-align:center;color:#8B8574;">Pas encore d'enveloppes. Va dans l'onglet <strong>Enveloppes</strong> pour en cr\u00e9er une.</div>`;
+  } else {
+    data.envelopes.forEach(env => {
+      const spent = spentByEnvelope(env.id);
+      const pct = env.budget > 0 ? (spent/env.budget)*100 : 0;
+      const remaining = env.budget - spent;
+      const barColor = remaining<0 ? '#C1502E' : pct>85 ? '#D98E2B' : '#3FA34D';
+      html += `
+      <div class="card">
+        <div class="flap" style="background:${env.color}"></div>
+        <div class="row-between" style="margin-top:10px;">
+          <div style="font-size:16px;font-weight:700;">${esc(env.name)}</div>
+          <button class="ghost" data-quickadd="${env.id}">+ d\u00e9pense</button>
+        </div>
+        <div class="mono" style="font-size:13px;color:#6B6459;margin-top:2px;">${eur(spent)} / ${eur(env.budget)}</div>
+        <div class="track"><div class="fill" style="width:${Math.min(pct,100)}%;background:${barColor}"></div></div>
+        <div class="mono" style="font-size:12px;margin-top:6px;color:${remaining<0?'#C1502E':'#3B6D11'}">
+          ${remaining>=0 ? eur(remaining)+' restants' : eur(Math.abs(remaining))+' de d\u00e9passement'}
+        </div>
+      </div>`;
+    });
+  }
+  return html;
+}
+
+function renderEnveloppes() {
+  const un = unallocated();
+  let html = `
+  <div class="card">
+    <div class="label">Nouvelle enveloppe</div>
+    <div class="row" style="margin-top:8px;">
+      <input id="envName" placeholder="Nom (ex. Courses)">
+      <input id="envBudget" style="width:110px;" placeholder="Budget \u20ac" type="number" min="0" step="0.01">
+    </div>
+    <button class="btn" id="addEnvBtn" style="margin-top:10px;">Ajouter l'enveloppe</button>
+    <div class="mono" style="font-size:12px;margin-top:10px;color:${un<0?'#C1502E':'#8B8574'}">
+      ${un>=0 ? eur(un)+' restent \u00e0 affecter' : eur(Math.abs(un))+' au-del\u00e0 de ton disponible'}
+    </div>
+  </div>`;
+
+  data.envelopes.forEach(env => {
+    const spent = spentByEnvelope(env.id);
+    const remaining = env.budget - spent;
+    const open = openEnvelopeId === env.id;
+    const txs = monthTx().filter(t=>t.envelopeId===env.id).slice(0,8);
+    html += `
+    <div class="card">
+      <div class="flap" style="background:${env.color}"></div>
+      <div class="row-between" style="margin-top:10px;">
+        <div>
+          <div style="font-size:16px;font-weight:700;">${esc(env.name)}</div>
+          <div class="mono" style="font-size:12px;color:#6B6459;">${eur(spent)} / ${eur(env.budget)} \u00b7 ${remaining>=0 ? eur(remaining)+' restants' : 'd\u00e9pass\u00e9 de '+eur(Math.abs(remaining))}</div>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="ghost" data-quickadd="${env.id}">+ d\u00e9pense</button>
+          <button class="ghost" data-toggle="${env.id}">${open?'masquer':'d\u00e9tail'}</button>
+          <button class="danger" data-removeenv="${env.id}">suppr.</button>
+        </div>
+      </div>
+      ${open ? `<div style="margin-top:10px;"><div class="divider"></div>` +
+        (txs.length===0 ? `<div style="font-size:12px;color:#8B8574;">Aucune d\u00e9pense ce mois-ci.</div>` :
+          txs.map(t=>`<div class="txline mono"><span>${t.date.slice(8,10)}/${t.date.slice(5,7)} \u00b7 ${esc(t.note||'sans note')}</span><span style="display:flex;gap:8px;align-items:center;">${eur(t.amount)}<button class="danger" style="padding:2px 6px;" data-removetx="${t.id}">x</button></span></div>`).join('')
+        ) + `</div>` : ''}
+    </div>`;
+  });
+  return html;
+}
+
+function renderAbonnements() {
+  let html = `
+  <div class="card">
+    <div class="label">Nouvel abonnement / charge fixe</div>
+    <div class="row" style="margin-top:8px;">
+      <input id="subName" placeholder="Nom (ex. Loyer, Netflix)">
+      <input id="subAmount" style="width:110px;" placeholder="Montant \u20ac" type="number" min="0" step="0.01">
+    </div>
+    <button class="btn" id="addSubBtn" style="margin-top:10px;">Ajouter</button>
+  </div>
+  <div class="card">
+    <div class="row-between" style="margin-bottom:10px;">
+      <div class="label">Total mensuel</div>
+      <div class="mono" style="font-weight:700;">${eur(totalSubs())}</div>
+    </div>`;
+  if (data.subscriptions.length === 0) {
+    html += `<div style="font-size:13px;color:#8B8574;">Aucun abonnement enregistr\u00e9.</div>`;
+  } else {
+    data.subscriptions.forEach(s => {
+      html += `<div class="subrow">
+        <span style="font-size:14px;">${esc(s.name)}</span>
+        <span style="display:flex;gap:10px;align-items:center;">
+          <span class="mono" style="font-size:14px;">${eur(s.amount)}</span>
+          <button class="danger" data-removesub="${s.id}">suppr.</button>
+        </span>
+      </div>`;
+    });
+  }
+  html += `</div>`;
+  return html;
+}
+
+function renderRevenu() {
+  return `
+  <div class="card">
+    <div class="field">
+      <div class="label" style="margin-bottom:4px;">Revenu mensuel approximatif</div>
+      <input id="incomeInput" type="number" min="0" step="0.01" value="${data.income||''}">
+    </div>
+    <div class="divider"></div>
+    <div class="row-between mono" style="font-size:13px;">
+      <span>Abonnements</span><span>&minus; ${eur(totalSubs())}</span>
+    </div>
+    <div class="row-between mono" style="font-size:14px;margin-top:6px;font-weight:700;">
+      <span>Disponible pour les enveloppes</span><span>${eur(remainingAfterSubs())}</span>
+    </div>
+  </div>`;
+}
+
+function renderModal() {
+  const root = document.getElementById('modalRoot');
+  if (!expenseFor) { root.innerHTML = ''; return; }
+  const env = data.envelopes.find(e=>e.id===expenseFor);
+  if (!env) { expenseFor = null; root.innerHTML = ''; return; }
+  root.innerHTML = `
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="card modal">
+      <div class="flap" style="background:${env.color}"></div>
+      <div style="margin-top:10px;font-size:16px;font-weight:700;margin-bottom:12px;">D\u00e9pense \u00b7 ${esc(env.name)}</div>
+      <div class="field">
+        <div class="label" style="margin-bottom:4px;">Montant</div>
+        <input id="txAmount" type="number" min="0" step="0.01" placeholder="0.00" autofocus>
+      </div>
+      <div class="field">
+        <div class="label" style="margin-bottom:4px;">Note (optionnel)</div>
+        <input id="txNote" placeholder="ex. Carrefour">
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn" id="saveTx">Enregistrer</button>
+        <button class="ghost" id="cancelTx">Annuler</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function bindEvents() {
+  document.querySelectorAll('[data-tab]').forEach(el =>
+    el.onclick = () => { tab = el.dataset.tab; render(); });
+
+  document.querySelectorAll('[data-quickadd]').forEach(el =>
+    el.onclick = () => { expenseFor = el.dataset.quickadd; render(); });
+
+  document.querySelectorAll('[data-toggle]').forEach(el =>
+    el.onclick = () => { openEnvelopeId = openEnvelopeId === el.dataset.toggle ? null : el.dataset.toggle; render(); });
+
+  document.querySelectorAll('[data-removeenv]').forEach(el =>
+    el.onclick = () => removeEnvelope(el.dataset.removeenv));
+
+  document.querySelectorAll('[data-removetx]').forEach(el =>
+    el.onclick = () => removeTransaction(el.dataset.removetx));
+
+  document.querySelectorAll('[data-removesub]').forEach(el =>
+    el.onclick = () => removeSubscription(el.dataset.removesub));
+
+  const addEnvBtn = document.getElementById('addEnvBtn');
+  if (addEnvBtn) addEnvBtn.onclick = () => {
+    addEnvelope(document.getElementById('envName').value, document.getElementById('envBudget').value);
+  };
+
+  const addSubBtn = document.getElementById('addSubBtn');
+  if (addSubBtn) addSubBtn.onclick = () => {
+    addSubscription(document.getElementById('subName').value, document.getElementById('subAmount').value);
+  };
+
+  const incomeInput = document.getElementById('incomeInput');
+  if (incomeInput) incomeInput.onblur = () => setIncome(incomeInput.value);
+
+  const overlay = document.getElementById('modalOverlay');
+  if (overlay) overlay.onclick = (e) => { if (e.target === overlay) { expenseFor = null; render(); } };
+  const saveTx = document.getElementById('saveTx');
+  if (saveTx) saveTx.onclick = () => addTransaction(expenseFor, document.getElementById('txAmount').value, document.getElementById('txNote').value);
+  const cancelTx = document.getElementById('cancelTx');
+  if (cancelTx) cancelTx.onclick = () => { expenseFor = null; render(); };
+}
+
+render();
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+}
+</script>
+</body>
+</html>
