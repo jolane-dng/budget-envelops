@@ -77,6 +77,10 @@ function loadData() {
       delete d.income;
     }
     if (d.courseEntries === undefined) d.courseEntries = [];
+    if (d.envelopes) d.envelopes.forEach(e => {
+      if (e.rollover === undefined) e.rollover = false;
+      if (e.createdMonth === undefined) e.createdMonth = monthKey();
+    });
     return d;
   } catch(e) { return structuredClone(DEFAULT_DATA); }
 }
@@ -100,6 +104,21 @@ function unallocated() { return remainingAfterSubs() - totalEnvBudget(); }
 function monthTx() { const mk = monthKey(); return data.transactions.filter(t=>t.date.slice(0,7)===mk); }
 function spentByEnvelope(id) { return monthTx().filter(t=>t.envelopeId===id).reduce((s,t)=>s+Number(t.amount),0); }
 function totalSpent() { return monthTx().reduce((s,t)=>s+Number(t.amount),0); }
+function monthsBetween(fromKey, toKey) {
+  const [fy, fm] = fromKey.split('-').map(Number);
+  const [ty, tm] = toKey.split('-').map(Number);
+  return Math.max(1, (ty*12+tm) - (fy*12+fm) + 1);
+}
+function envelopeStats(env) {
+  const spentThisMonth = spentByEnvelope(env.id);
+  if (env.rollover) {
+    const months = monthsBetween(env.createdMonth || monthKey(), monthKey());
+    const allocated = env.budget * months;
+    const spentAllTime = data.transactions.filter(t=>t.envelopeId===env.id).reduce((s,t)=>s+Number(t.amount),0);
+    return { allocated, spent: spentAllTime, spentThisMonth, remaining: allocated - spentAllTime, months };
+  }
+  return { allocated: env.budget, spent: spentThisMonth, spentThisMonth, remaining: env.budget - spentThisMonth, months: 1 };
+}
 
 function addSubscription(name, amount) {
   if (!name.trim() || !amount || Number(amount) <= 0) return;
@@ -110,10 +129,10 @@ function removeSubscription(id) {
   data.subscriptions = data.subscriptions.filter(s=>s.id!==id);
   saveData(); render();
 }
-function addEnvelope(name, budget) {
+function addEnvelope(name, budget, rollover) {
   if (!name.trim() || budget === '' || Number(budget) < 0) return;
   const color = COLORS[data.envelopes.length % COLORS.length];
-  data.envelopes.push({ id: uid(), name: name.trim(), budget: Number(budget), color });
+  data.envelopes.push({ id: uid(), name: name.trim(), budget: Number(budget), color, rollover: !!rollover, createdMonth: monthKey() });
   saveData(); render();
 }
 function removeEnvelope(id) {
@@ -121,11 +140,12 @@ function removeEnvelope(id) {
   data.transactions = data.transactions.filter(t=>t.envelopeId!==id);
   saveData(); render();
 }
-function updateEnvelopeBudget(id, newBudget) {
+function updateEnvelopeBudget(id, newBudget, rollover) {
   if (newBudget === '' || Number(newBudget) < 0) return;
   const env = data.envelopes.find(e=>e.id===id);
   if (!env) return;
   env.budget = Number(newBudget);
+  env.rollover = !!rollover;
   saveData(); editBudgetId = null; render();
 }
 function addTransaction(envelopeId, amount, note) {
@@ -204,18 +224,18 @@ function renderApercu() {
     html += `<div class="card" style="text-align:center;color:#8B8574;">Pas encore d'enveloppes. Va dans l'onglet <strong>Enveloppes</strong> pour en cr\u00e9er une.</div>`;
   } else {
     data.envelopes.forEach(env => {
-      const spent = spentByEnvelope(env.id);
-      const pct = env.budget > 0 ? (spent/env.budget)*100 : 0;
-      const remaining = env.budget - spent;
+      const stats = envelopeStats(env);
+      const pct = stats.allocated > 0 ? (stats.spent/stats.allocated)*100 : 0;
+      const remaining = stats.remaining;
       const barColor = remaining<0 ? '#C1502E' : pct>85 ? '#D98E2B' : '#3FA34D';
       html += `
       <div class="card">
         <div class="flap" style="background:${env.color}"></div>
         <div class="row-between" style="margin-top:10px;">
-          <div style="font-size:16px;font-weight:700;">${esc(env.name)}</div>
+          <div style="font-size:16px;font-weight:700;">${esc(env.name)}${env.rollover ? ' <span class="mono" style="font-size:11px;color:#8B8574;">(cumulatif)</span>' : ''}</div>
           <button class="ghost" data-quickadd="${env.id}">+ d\u00e9pense</button>
         </div>
-        <div class="mono" style="font-size:13px;color:#6B6459;margin-top:2px;">${eur(spent)} / ${eur(env.budget)}</div>
+        <div class="mono" style="font-size:13px;color:#6B6459;margin-top:2px;">${env.rollover ? eur(stats.spent)+' / '+eur(stats.allocated)+' cumul\u00e9s' : eur(stats.spent)+' / '+eur(env.budget)}</div>
         <div class="track"><div class="fill" style="width:${Math.min(pct,100)}%;background:${barColor}"></div></div>
         <div class="mono" style="font-size:12px;margin-top:6px;color:${remaining<0?'#C1502E':'#3B6D11'}">
           ${remaining>=0 ? eur(remaining)+' restants' : eur(Math.abs(remaining))+' de d\u00e9passement'}
@@ -235,6 +255,10 @@ function renderEnveloppes() {
       <input id="envName" placeholder="Nom (ex. Courses)">
       <input id="envBudget" style="width:110px;" placeholder="Budget \u20ac" type="number" min="0" step="0.01">
     </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:#6B6459;">
+      <input type="checkbox" id="envRollover" style="width:auto;">
+      Cumuler le reste non d\u00e9pens\u00e9 d'un mois sur l'autre
+    </label>
     <button class="btn" id="addEnvBtn" style="margin-top:10px;">Ajouter l'enveloppe</button>
     <div class="mono" style="font-size:12px;margin-top:10px;color:${un<0?'#C1502E':'#8B8574'}">
       ${un>=0 ? eur(un)+' restent \u00e0 affecter' : eur(Math.abs(un))+' au-del\u00e0 de ton disponible'}
@@ -242,28 +266,37 @@ function renderEnveloppes() {
   </div>`;
 
   data.envelopes.forEach(env => {
-    const spent = spentByEnvelope(env.id);
-    const remaining = env.budget - spent;
+    const stats = envelopeStats(env);
+    const remaining = stats.remaining;
     const open = openEnvelopeId === env.id;
     const editing = editBudgetId === env.id;
     const txs = monthTx().filter(t=>t.envelopeId===env.id).slice(0,8);
+    const budgetLine = env.rollover
+      ? `${eur(stats.spentThisMonth)} ce mois-ci \u00b7 ${eur(stats.spent)} / ${eur(stats.allocated)} cumul\u00e9s (${stats.months} mois) \u00b7 ${remaining>=0 ? eur(remaining)+' restants' : 'd\u00e9pass\u00e9 de '+eur(Math.abs(remaining))}`
+      : `${eur(stats.spent)} / ${eur(env.budget)} \u00b7 ${remaining>=0 ? eur(remaining)+' restants' : 'd\u00e9pass\u00e9 de '+eur(Math.abs(remaining))}`;
     html += `
     <div class="card">
       <div class="flap" style="background:${env.color}"></div>
       <div class="row-between" style="margin-top:10px;">
         <div>
-          <div style="font-size:16px;font-weight:700;">${esc(env.name)}</div>
+          <div style="font-size:16px;font-weight:700;">${esc(env.name)}${env.rollover ? ' <span class="mono" style="font-size:11px;color:#8B8574;">(cumulatif)</span>' : ''}</div>
           ${editing ? `
-            <div class="row" style="margin-top:6px;">
-              <input id="editBudgetInput-${env.id}" type="number" min="0" step="0.01" value="${env.budget}" style="width:110px;">
-              <button class="btn" data-savebudget="${env.id}" style="padding:6px 10px;">OK</button>
-              <button class="ghost" data-canceledit="${env.id}" style="padding:6px 10px;">annuler</button>
+            <div style="margin-top:6px;">
+              <div class="row">
+                <input id="editBudgetInput-${env.id}" type="number" min="0" step="0.01" value="${env.budget}" style="width:110px;">
+                <button class="btn" data-savebudget="${env.id}" style="padding:6px 10px;">OK</button>
+                <button class="ghost" data-canceledit="${env.id}" style="padding:6px 10px;">annuler</button>
+              </div>
+              <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:#6B6459;">
+                <input type="checkbox" id="editRolloverInput-${env.id}" style="width:auto;" ${env.rollover ? 'checked' : ''}>
+                Cumuler le reste non d\u00e9pens\u00e9 d'un mois sur l'autre
+              </label>
             </div>
-          ` : `<div class="mono" style="font-size:12px;color:#6B6459;">${eur(spent)} / ${eur(env.budget)} \u00b7 ${remaining>=0 ? eur(remaining)+' restants' : 'd\u00e9pass\u00e9 de '+eur(Math.abs(remaining))}</div>`}
+          ` : `<div class="mono" style="font-size:12px;color:#6B6459;">${budgetLine}</div>`}
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
           <button class="ghost" data-quickadd="${env.id}">+ d\u00e9pense</button>
-          <button class="ghost" data-editbudget="${env.id}">budget</button>
+          <button class="ghost" data-editbudget="${env.id}">modifier</button>
           <button class="ghost" data-toggle="${env.id}">${open?'masquer':'d\u00e9tail'}</button>
           <button class="danger" data-removeenv="${env.id}">suppr.</button>
         </div>
@@ -453,7 +486,7 @@ function bindEvents() {
   document.querySelectorAll('[data-savebudget]').forEach(el =>
     el.onclick = () => {
       const id = el.dataset.savebudget;
-      updateEnvelopeBudget(id, document.getElementById('editBudgetInput-' + id).value);
+      updateEnvelopeBudget(id, document.getElementById('editBudgetInput-' + id).value, document.getElementById('editRolloverInput-' + id).checked);
     });
 
   document.querySelectorAll('[data-removetx]').forEach(el =>
@@ -464,7 +497,7 @@ function bindEvents() {
 
   const addEnvBtn = document.getElementById('addEnvBtn');
   if (addEnvBtn) addEnvBtn.onclick = () => {
-    addEnvelope(document.getElementById('envName').value, document.getElementById('envBudget').value);
+    addEnvelope(document.getElementById('envName').value, document.getElementById('envBudget').value, document.getElementById('envRollover').checked);
   };
 
   const addSubBtn = document.getElementById('addSubBtn');
