@@ -65,11 +65,19 @@ const eur = n => (Math.round((n+Number.EPSILON)*100)/100).toLocaleString('fr-FR'
 const todayISO = () => new Date().toISOString().slice(0,10);
 const monthKey = (d=new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 
-const DEFAULT_DATA = { income: 0, subscriptions: [], envelopes: [], transactions: [] };
+const DEFAULT_DATA = { incomeSources: [], courseEntries: [], subscriptions: [], envelopes: [], transactions: [] };
 function loadData() {
   try {
     const raw = localStorage.getItem('budget-enveloppes-data');
-    return raw ? JSON.parse(raw) : structuredClone(DEFAULT_DATA);
+    if (!raw) return structuredClone(DEFAULT_DATA);
+    const d = JSON.parse(raw);
+    // migration depuis l'ancienne version (un seul champ "income")
+    if (d.incomeSources === undefined) {
+      d.incomeSources = d.income ? [{ id: uid(), name: 'Revenu', amount: Number(d.income) }] : [];
+      delete d.income;
+    }
+    if (d.courseEntries === undefined) d.courseEntries = [];
+    return d;
   } catch(e) { return structuredClone(DEFAULT_DATA); }
 }
 function saveData() { localStorage.setItem('budget-enveloppes-data', JSON.stringify(data)); }
@@ -78,10 +86,15 @@ let data = loadData();
 let tab = 'apercu';
 let openEnvelopeId = null;
 let expenseFor = null;
+let courseModalOpen = false;
 
 function totalSubs() { return data.subscriptions.reduce((s,x)=>s+Number(x.amount||0),0); }
 function totalEnvBudget() { return data.envelopes.reduce((s,x)=>s+Number(x.budget||0),0); }
-function remainingAfterSubs() { return Number(data.income||0) - totalSubs(); }
+function totalStableIncome() { return data.incomeSources.reduce((s,x)=>s+Number(x.amount||0),0); }
+function monthCourseEntries() { const mk = monthKey(); return data.courseEntries.filter(c=>c.date.slice(0,7)===mk); }
+function courseIncomeThisMonth() { return monthCourseEntries().reduce((s,c)=>s+Number(c.amount),0); }
+function totalIncome() { return totalStableIncome() + courseIncomeThisMonth(); }
+function remainingAfterSubs() { return totalIncome() - totalSubs(); }
 function unallocated() { return remainingAfterSubs() - totalEnvBudget(); }
 function monthTx() { const mk = monthKey(); return data.transactions.filter(t=>t.date.slice(0,7)===mk); }
 function spentByEnvelope(id) { return monthTx().filter(t=>t.envelopeId===id).reduce((s,t)=>s+Number(t.amount),0); }
@@ -116,7 +129,24 @@ function removeTransaction(id) {
   data.transactions = data.transactions.filter(t=>t.id!==id);
   saveData(); render();
 }
-function setIncome(v) { data.income = Number(v) || 0; saveData(); render(); }
+function addIncomeSource(name, amount) {
+  if (!name.trim() || !amount || Number(amount) <= 0) return;
+  data.incomeSources.push({ id: uid(), name: name.trim(), amount: Number(amount) });
+  saveData(); render();
+}
+function removeIncomeSource(id) {
+  data.incomeSources = data.incomeSources.filter(s=>s.id!==id);
+  saveData(); render();
+}
+function addCourseEntry(amount, note) {
+  if (!amount || Number(amount) <= 0) return;
+  data.courseEntries.unshift({ id: uid(), amount: Number(amount), note: note.trim(), date: todayISO() });
+  saveData(); courseModalOpen = false; render();
+}
+function removeCourseEntry(id) {
+  data.courseEntries = data.courseEntries.filter(c=>c.id!==id);
+  saveData(); render();
+}
 
 function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
@@ -142,8 +172,11 @@ function renderApercu() {
   const rem = remainingAfterSubs(), un = unallocated();
   let html = `
   <div class="card">
-    <div class="label">Revenu approximatif</div>
-    <div class="bignum mono">${eur(data.income||0)}</div>
+    <div class="label">Revenus ce mois-ci</div>
+    <div class="bignum mono">${eur(totalIncome())}</div>
+    <div class="mono" style="font-size:12px;color:#8B8574;margin-top:2px;">
+      dont ${eur(totalStableIncome())} stables + ${eur(courseIncomeThisMonth())} de cours particuliers
+    </div>
     <div class="divider"></div>
     <div class="row-between mono" style="font-size:13px;">
       <span>Abonnements (${data.subscriptions.length})</span><span>&minus; ${eur(totalSubs())}</span>
@@ -261,24 +294,103 @@ function renderAbonnements() {
 }
 
 function renderRevenu() {
-  return `
+  let html = `
   <div class="card">
-    <div class="field">
-      <div class="label" style="margin-bottom:4px;">Revenu mensuel approximatif</div>
-      <input id="incomeInput" type="number" min="0" step="0.01" value="${data.income||''}">
+    <div class="label">Nouveau revenu stable</div>
+    <div style="font-size:12px;color:#8B8574;margin-top:4px;">Salaire, CAF, pension... des montants qui reviennent chaque mois.</div>
+    <div class="row" style="margin-top:8px;">
+      <input id="incSrcName" placeholder="Nom (ex. Salaire, APL)">
+      <input id="incSrcAmount" style="width:110px;" placeholder="Montant \u20ac" type="number" min="0" step="0.01">
     </div>
-    <div class="divider"></div>
+    <button class="btn" id="addIncSrcBtn" style="margin-top:10px;">Ajouter</button>
+  </div>
+
+  <div class="card">
+    <div class="row-between" style="margin-bottom:10px;">
+      <div class="label">Revenus stables</div>
+      <div class="mono" style="font-weight:700;">${eur(totalStableIncome())}</div>
+    </div>`;
+  if (data.incomeSources.length === 0) {
+    html += `<div style="font-size:13px;color:#8B8574;">Aucun revenu stable enregistr\u00e9.</div>`;
+  } else {
+    data.incomeSources.forEach(s => {
+      html += `<div class="subrow">
+        <span style="font-size:14px;">${esc(s.name)}</span>
+        <span style="display:flex;gap:10px;align-items:center;">
+          <span class="mono" style="font-size:14px;">${eur(s.amount)}</span>
+          <button class="danger" data-removeincsrc="${s.id}">suppr.</button>
+        </span>
+      </div>`;
+    });
+  }
+  html += `</div>`;
+
+  const courseEntries = monthCourseEntries().slice(0, 8);
+  html += `
+  <div class="card">
+    <div class="flap" style="background:#B5651D"></div>
+    <div class="row-between" style="margin-top:10px;">
+      <div>
+        <div style="font-size:16px;font-weight:700;">Cours particuliers</div>
+        <div class="mono" style="font-size:12px;color:#6B6459;">${eur(courseIncomeThisMonth())} ce mois-ci</div>
+      </div>
+      <button class="ghost" id="openCourseModalBtn">+ revenu</button>
+    </div>
+    <div style="margin-top:10px;">
+      <div class="divider"></div>`;
+  if (courseEntries.length === 0) {
+    html += `<div style="font-size:12px;color:#8B8574;">Aucun cours enregistr\u00e9 ce mois-ci.</div>`;
+  } else {
+    courseEntries.forEach(c => {
+      html += `<div class="txline mono">
+        <span>${c.date.slice(8,10)}/${c.date.slice(5,7)} \u00b7 ${esc(c.note||'sans note')}</span>
+        <span style="display:flex;gap:8px;align-items:center;">${eur(c.amount)}<button class="danger" style="padding:2px 6px;" data-removecourse="${c.id}">x</button></span>
+      </div>`;
+    });
+  }
+  html += `</div></div>`;
+
+  html += `
+  <div class="card">
     <div class="row-between mono" style="font-size:13px;">
+      <span>Revenus totaux ce mois-ci</span><span>${eur(totalIncome())}</span>
+    </div>
+    <div class="row-between mono" style="font-size:13px;margin-top:4px;">
       <span>Abonnements</span><span>&minus; ${eur(totalSubs())}</span>
     </div>
-    <div class="row-between mono" style="font-size:14px;margin-top:6px;font-weight:700;">
+    <div class="divider"></div>
+    <div class="row-between mono" style="font-size:14px;font-weight:700;">
       <span>Disponible pour les enveloppes</span><span>${eur(remainingAfterSubs())}</span>
     </div>
   </div>`;
+
+  return html;
 }
 
 function renderModal() {
   const root = document.getElementById('modalRoot');
+  if (courseModalOpen) {
+    root.innerHTML = `
+    <div class="modal-overlay" id="courseModalOverlay">
+      <div class="card modal">
+        <div class="flap" style="background:#B5651D"></div>
+        <div style="margin-top:10px;font-size:16px;font-weight:700;margin-bottom:12px;">Revenu \u00b7 Cours particuliers</div>
+        <div class="field">
+          <div class="label" style="margin-bottom:4px;">Montant</div>
+          <input id="courseAmount" type="number" min="0" step="0.01" placeholder="0.00" autofocus>
+        </div>
+        <div class="field">
+          <div class="label" style="margin-bottom:4px;">Note (optionnel)</div>
+          <input id="courseNote" placeholder="ex. \u00c9l\u00e8ve Lucas, 2h">
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button class="btn" id="saveCourse">Enregistrer</button>
+          <button class="ghost" id="cancelCourse">Annuler</button>
+        </div>
+      </div>
+    </div>`;
+    return;
+  }
   if (!expenseFor) { root.innerHTML = ''; return; }
   const env = data.envelopes.find(e=>e.id===expenseFor);
   if (!env) { expenseFor = null; root.innerHTML = ''; return; }
@@ -332,8 +444,24 @@ function bindEvents() {
     addSubscription(document.getElementById('subName').value, document.getElementById('subAmount').value);
   };
 
-  const incomeInput = document.getElementById('incomeInput');
-  if (incomeInput) incomeInput.onblur = () => setIncome(incomeInput.value);
+  const addIncSrcBtn = document.getElementById('addIncSrcBtn');
+  if (addIncSrcBtn) addIncSrcBtn.onclick = () => {
+    addIncomeSource(document.getElementById('incSrcName').value, document.getElementById('incSrcAmount').value);
+  };
+  document.querySelectorAll('[data-removeincsrc]').forEach(el =>
+    el.onclick = () => removeIncomeSource(el.dataset.removeincsrc));
+
+  const openCourseModalBtn = document.getElementById('openCourseModalBtn');
+  if (openCourseModalBtn) openCourseModalBtn.onclick = () => { courseModalOpen = true; render(); };
+  document.querySelectorAll('[data-removecourse]').forEach(el =>
+    el.onclick = () => removeCourseEntry(el.dataset.removecourse));
+
+  const courseOverlay = document.getElementById('courseModalOverlay');
+  if (courseOverlay) courseOverlay.onclick = (e) => { if (e.target === courseOverlay) { courseModalOpen = false; render(); } };
+  const saveCourse = document.getElementById('saveCourse');
+  if (saveCourse) saveCourse.onclick = () => addCourseEntry(document.getElementById('courseAmount').value, document.getElementById('courseNote').value);
+  const cancelCourse = document.getElementById('cancelCourse');
+  if (cancelCourse) cancelCourse.onclick = () => { courseModalOpen = false; render(); };
 
   const overlay = document.getElementById('modalOverlay');
   if (overlay) overlay.onclick = (e) => { if (e.target === overlay) { expenseFor = null; render(); } };
