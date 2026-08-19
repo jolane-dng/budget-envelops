@@ -85,6 +85,7 @@ function saveData() { localStorage.setItem('budget-enveloppes-data', JSON.string
 let data = loadData();
 let tab = 'apercu';
 let openEnvelopeId = null;
+let editBudgetId = null;
 let expenseFor = null;
 let courseModalOpen = false;
 
@@ -119,6 +120,13 @@ function removeEnvelope(id) {
   data.envelopes = data.envelopes.filter(e=>e.id!==id);
   data.transactions = data.transactions.filter(t=>t.envelopeId!==id);
   saveData(); render();
+}
+function updateEnvelopeBudget(id, newBudget) {
+  if (newBudget === '' || Number(newBudget) < 0) return;
+  const env = data.envelopes.find(e=>e.id===id);
+  if (!env) return;
+  env.budget = Number(newBudget);
+  saveData(); editBudgetId = null; render();
 }
 function addTransaction(envelopeId, amount, note) {
   if (!amount || Number(amount) <= 0) return;
@@ -237,6 +245,7 @@ function renderEnveloppes() {
     const spent = spentByEnvelope(env.id);
     const remaining = env.budget - spent;
     const open = openEnvelopeId === env.id;
+    const editing = editBudgetId === env.id;
     const txs = monthTx().filter(t=>t.envelopeId===env.id).slice(0,8);
     html += `
     <div class="card">
@@ -244,10 +253,17 @@ function renderEnveloppes() {
       <div class="row-between" style="margin-top:10px;">
         <div>
           <div style="font-size:16px;font-weight:700;">${esc(env.name)}</div>
-          <div class="mono" style="font-size:12px;color:#6B6459;">${eur(spent)} / ${eur(env.budget)} \u00b7 ${remaining>=0 ? eur(remaining)+' restants' : 'd\u00e9pass\u00e9 de '+eur(Math.abs(remaining))}</div>
+          ${editing ? `
+            <div class="row" style="margin-top:6px;">
+              <input id="editBudgetInput-${env.id}" type="number" min="0" step="0.01" value="${env.budget}" style="width:110px;">
+              <button class="btn" data-savebudget="${env.id}" style="padding:6px 10px;">OK</button>
+              <button class="ghost" data-canceledit="${env.id}" style="padding:6px 10px;">annuler</button>
+            </div>
+          ` : `<div class="mono" style="font-size:12px;color:#6B6459;">${eur(spent)} / ${eur(env.budget)} \u00b7 ${remaining>=0 ? eur(remaining)+' restants' : 'd\u00e9pass\u00e9 de '+eur(Math.abs(remaining))}</div>`}
         </div>
-        <div style="display:flex;gap:6px;">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
           <button class="ghost" data-quickadd="${env.id}">+ d\u00e9pense</button>
+          <button class="ghost" data-editbudget="${env.id}">budget</button>
           <button class="ghost" data-toggle="${env.id}">${open?'masquer':'d\u00e9tail'}</button>
           <button class="danger" data-removeenv="${env.id}">suppr.</button>
         </div>
@@ -427,6 +443,18 @@ function bindEvents() {
 
   document.querySelectorAll('[data-removeenv]').forEach(el =>
     el.onclick = () => removeEnvelope(el.dataset.removeenv));
+
+  document.querySelectorAll('[data-editbudget]').forEach(el =>
+    el.onclick = () => { editBudgetId = el.dataset.editbudget; render(); });
+
+  document.querySelectorAll('[data-canceledit]').forEach(el =>
+    el.onclick = () => { editBudgetId = null; render(); });
+
+  document.querySelectorAll('[data-savebudget]').forEach(el =>
+    el.onclick = () => {
+      const id = el.dataset.savebudget;
+      updateEnvelopeBudget(id, document.getElementById('editBudgetInput-' + id).value);
+    });
 
   document.querySelectorAll('[data-removetx]').forEach(el =>
     el.onclick = () => removeTransaction(el.dataset.removetx));
