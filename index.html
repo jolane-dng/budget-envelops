@@ -81,6 +81,7 @@ function loadData() {
       if (e.rollover === undefined) e.rollover = false;
       if (e.createdMonth === undefined) e.createdMonth = monthKey();
     });
+    if (!d.envelopes) d.envelopes = [];
     return d;
   } catch(e) { return structuredClone(DEFAULT_DATA); }
 }
@@ -90,6 +91,8 @@ let data = loadData();
 let tab = 'apercu';
 let openEnvelopeId = null;
 let editBudgetId = null;
+let editIncomeId = null;
+let editSubId = null;
 let expenseFor = null;
 let courseModalOpen = false;
 
@@ -129,6 +132,13 @@ function removeSubscription(id) {
   data.subscriptions = data.subscriptions.filter(s=>s.id!==id);
   saveData(); render();
 }
+function updateSubscription(id, name, amount) {
+  if (!name.trim() || !amount || Number(amount) <= 0) return;
+  const s = data.subscriptions.find(x=>x.id===id);
+  if (!s) return;
+  s.name = name.trim(); s.amount = Number(amount);
+  saveData(); editSubId = null; render();
+}
 function addEnvelope(name, budget, rollover) {
   if (!name.trim() || budget === '' || Number(budget) < 0) return;
   const color = COLORS[data.envelopes.length % COLORS.length];
@@ -165,6 +175,13 @@ function addIncomeSource(name, amount) {
 function removeIncomeSource(id) {
   data.incomeSources = data.incomeSources.filter(s=>s.id!==id);
   saveData(); render();
+}
+function updateIncomeSource(id, name, amount) {
+  if (!name.trim() || !amount || Number(amount) <= 0) return;
+  const s = data.incomeSources.find(x=>x.id===id);
+  if (!s) return;
+  s.name = name.trim(); s.amount = Number(amount);
+  saveData(); editIncomeId = null; render();
 }
 function addCourseEntry(amount, note) {
   if (!amount || Number(amount) <= 0) return;
@@ -328,14 +345,30 @@ function renderAbonnements() {
   if (data.subscriptions.length === 0) {
     html += `<div style="font-size:13px;color:#8B8574;">Aucun abonnement enregistr\u00e9.</div>`;
   } else {
-    data.subscriptions.forEach(s => {
-      html += `<div class="subrow">
-        <span style="font-size:14px;">${esc(s.name)}</span>
-        <span style="display:flex;gap:10px;align-items:center;">
-          <span class="mono" style="font-size:14px;">${eur(s.amount)}</span>
-          <button class="danger" data-removesub="${s.id}">suppr.</button>
-        </span>
-      </div>`;
+    const sorted = [...data.subscriptions].sort((a,b) => Number(b.amount) - Number(a.amount));
+    sorted.forEach(s => {
+      const editing = editSubId === s.id;
+      if (editing) {
+        html += `<div class="subrow" style="display:block;">
+          <div class="row">
+            <input id="editSubName-${s.id}" value="${esc(s.name)}" placeholder="Nom">
+            <input id="editSubAmount-${s.id}" style="width:100px;" type="number" min="0" step="0.01" value="${s.amount}">
+          </div>
+          <div style="display:flex;gap:8px;margin-top:6px;">
+            <button class="btn" data-savesub="${s.id}" style="padding:6px 10px;">OK</button>
+            <button class="ghost" data-cancelsub="${s.id}" style="padding:6px 10px;">annuler</button>
+          </div>
+        </div>`;
+      } else {
+        html += `<div class="subrow">
+          <span style="font-size:14px;">${esc(s.name)}</span>
+          <span style="display:flex;gap:8px;align-items:center;">
+            <span class="mono" style="font-size:14px;">${eur(s.amount)}</span>
+            <button class="ghost" data-editsub="${s.id}" style="padding:4px 8px;font-size:11px;">modifier</button>
+            <button class="danger" data-removesub="${s.id}">suppr.</button>
+          </span>
+        </div>`;
+      }
     });
   }
   html += `</div>`;
@@ -363,13 +396,28 @@ function renderRevenu() {
     html += `<div style="font-size:13px;color:#8B8574;">Aucun revenu stable enregistr\u00e9.</div>`;
   } else {
     data.incomeSources.forEach(s => {
-      html += `<div class="subrow">
-        <span style="font-size:14px;">${esc(s.name)}</span>
-        <span style="display:flex;gap:10px;align-items:center;">
-          <span class="mono" style="font-size:14px;">${eur(s.amount)}</span>
-          <button class="danger" data-removeincsrc="${s.id}">suppr.</button>
-        </span>
-      </div>`;
+      const editing = editIncomeId === s.id;
+      if (editing) {
+        html += `<div class="subrow" style="display:block;">
+          <div class="row">
+            <input id="editIncName-${s.id}" value="${esc(s.name)}" placeholder="Nom">
+            <input id="editIncAmount-${s.id}" style="width:100px;" type="number" min="0" step="0.01" value="${s.amount}">
+          </div>
+          <div style="display:flex;gap:8px;margin-top:6px;">
+            <button class="btn" data-saveincome="${s.id}" style="padding:6px 10px;">OK</button>
+            <button class="ghost" data-cancelincome="${s.id}" style="padding:6px 10px;">annuler</button>
+          </div>
+        </div>`;
+      } else {
+        html += `<div class="subrow">
+          <span style="font-size:14px;">${esc(s.name)}</span>
+          <span style="display:flex;gap:8px;align-items:center;">
+            <span class="mono" style="font-size:14px;">${eur(s.amount)}</span>
+            <button class="ghost" data-editincome="${s.id}" style="padding:4px 8px;font-size:11px;">modifier</button>
+            <button class="danger" data-removeincsrc="${s.id}">suppr.</button>
+          </span>
+        </div>`;
+      }
     });
   }
   html += `</div>`;
@@ -494,6 +542,15 @@ function bindEvents() {
 
   document.querySelectorAll('[data-removesub]').forEach(el =>
     el.onclick = () => removeSubscription(el.dataset.removesub));
+  document.querySelectorAll('[data-editsub]').forEach(el =>
+    el.onclick = () => { editSubId = el.dataset.editsub; render(); });
+  document.querySelectorAll('[data-cancelsub]').forEach(el =>
+    el.onclick = () => { editSubId = null; render(); });
+  document.querySelectorAll('[data-savesub]').forEach(el =>
+    el.onclick = () => {
+      const id = el.dataset.savesub;
+      updateSubscription(id, document.getElementById('editSubName-'+id).value, document.getElementById('editSubAmount-'+id).value);
+    });
 
   const addEnvBtn = document.getElementById('addEnvBtn');
   if (addEnvBtn) addEnvBtn.onclick = () => {
@@ -511,6 +568,15 @@ function bindEvents() {
   };
   document.querySelectorAll('[data-removeincsrc]').forEach(el =>
     el.onclick = () => removeIncomeSource(el.dataset.removeincsrc));
+  document.querySelectorAll('[data-editincome]').forEach(el =>
+    el.onclick = () => { editIncomeId = el.dataset.editincome; render(); });
+  document.querySelectorAll('[data-cancelincome]').forEach(el =>
+    el.onclick = () => { editIncomeId = null; render(); });
+  document.querySelectorAll('[data-saveincome]').forEach(el =>
+    el.onclick = () => {
+      const id = el.dataset.saveincome;
+      updateIncomeSource(id, document.getElementById('editIncName-'+id).value, document.getElementById('editIncAmount-'+id).value);
+    });
 
   const openCourseModalBtn = document.getElementById('openCourseModalBtn');
   if (openCourseModalBtn) openCourseModalBtn.onclick = () => { courseModalOpen = true; render(); };
