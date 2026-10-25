@@ -118,15 +118,30 @@ function spentInMonth(envId, key) {
 }
 // Report du mois précédent : chaque mois l'enveloppe repart de son budget,
 // plus le reste du mois d'avant (positif = excédent, négatif = dépassement).
+// Si un report a été figé (env.carryMonth), on repart de lui au lieu de tout l'historique.
 function carryOver(env) {
   const current = monthKey();
-  let key = env.createdMonth || current;
-  let carry = 0;
+  let key = env.carryMonth || env.createdMonth || current;
+  let carry = env.carryMonth ? Number(env.carry || 0) : 0;
   while (key < current) {
     carry = env.budget + carry - spentInMonth(env.id, key);
     key = nextMonthKey(key);
   }
   return carry;
+}
+// Nouveau mois : on fige le report de chaque enveloppe, puis on supprime
+// les dépenses et cours des mois précédents (ils ne servent plus à rien).
+function purgeOldMonths() {
+  const current = monthKey();
+  if (data.lastPurgeMonth === current) return;
+  data.envelopes.forEach(env => {
+    env.carry = carryOver(env);   // calculé AVANT la suppression
+    env.carryMonth = current;
+  });
+  data.transactions = data.transactions.filter(t => t.date.slice(0,7) >= current);
+  data.courseEntries = data.courseEntries.filter(c => c.date.slice(0,7) >= current);
+  data.lastPurgeMonth = current;
+  saveData();
 }
 function carryLabel(carry) {
   return carry > 0
@@ -218,6 +233,7 @@ function removeCourseEntry(id) {
 function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
 function render() {
+  purgeOldMonths();
   document.getElementById('monthLabel').textContent =
     new Date().toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
 

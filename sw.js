@@ -1,4 +1,4 @@
-const CACHE_NAME = 'enveloppes-v8';
+const CACHE_NAME = 'enveloppes-v9';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
