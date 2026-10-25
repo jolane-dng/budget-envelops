@@ -107,18 +107,40 @@ function unallocated() { return remainingAfterSubs() - totalEnvBudget(); }
 function monthTx() { const mk = monthKey(); return data.transactions.filter(t=>t.date.slice(0,7)===mk); }
 function spentByEnvelope(id) { return monthTx().filter(t=>t.envelopeId===id).reduce((s,t)=>s+Number(t.amount),0); }
 function totalSpent() { return monthTx().reduce((s,t)=>s+Number(t.amount),0); }
-function monthsBetween(fromKey, toKey) {
-  const [fy, fm] = fromKey.split('-').map(Number);
-  const [ty, tm] = toKey.split('-').map(Number);
-  return Math.max(1, (ty*12+tm) - (fy*12+fm) + 1);
+function nextMonthKey(key) {
+  const [y, m] = key.split('-').map(Number);
+  return m === 12 ? `${y+1}-01` : `${y}-${String(m+1).padStart(2,'0')}`;
+}
+function spentInMonth(envId, key) {
+  return data.transactions
+    .filter(t=>t.envelopeId===envId && t.date.slice(0,7)===key)
+    .reduce((s,t)=>s+Number(t.amount),0);
+}
+// Report du mois précédent : chaque mois l'enveloppe repart de son budget,
+// plus le reste du mois d'avant (positif = excédent, négatif = dépassement).
+function carryOver(env) {
+  const current = monthKey();
+  let key = env.createdMonth || current;
+  let carry = 0;
+  while (key < current) {
+    carry = env.budget + carry - spentInMonth(env.id, key);
+    key = nextMonthKey(key);
+  }
+  return carry;
+}
+function carryLabel(carry) {
+  return carry > 0
+    ? `+${eur(carry)} reportés du mois dernier`
+    : `${eur(-carry)} de dépassement du mois dernier déduits`;
 }
 function envelopeStats(env) {
   const spentThisMonth = spentByEnvelope(env.id);
   if (env.rollover) {
-    const months = monthsBetween(env.createdMonth || monthKey(), monthKey());
-    const allocated = env.budget * months;
-    const spentAllTime = data.transactions.filter(t=>t.envelopeId===env.id).reduce((s,t)=>s+Number(t.amount),0);
-    return { allocated, spent: spentAllTime, spentThisMonth, remaining: allocated - spentAllTime, months };
+    const carry = carryOver(env);
+    const allocated = env.budget + Math.max(carry, 0); // l'excédent agrandit l'enveloppe
+    const debt = Math.max(-carry, 0);                   // le dépassement est déjà "consommé"
+    const spent = spentThisMonth + debt;
+    return { allocated, spent, spentThisMonth, carry, remaining: allocated - spent, months: 1 };
   }
   return { allocated: env.budget, spent: spentThisMonth, spentThisMonth, remaining: env.budget - spentThisMonth, months: 1 };
 }
@@ -252,7 +274,8 @@ function renderApercu() {
           <div style="font-size:16px;font-weight:700;">${esc(env.name)}${env.rollover ? ' <span class="mono" style="font-size:11px;color:#8B8574;">(cumulatif)</span>' : ''}</div>
           <button class="ghost" data-quickadd="${env.id}">+ d\u00e9pense</button>
         </div>
-        <div class="mono" style="font-size:13px;color:#6B6459;margin-top:2px;">${env.rollover ? eur(stats.spent)+' / '+eur(stats.allocated)+' cumul\u00e9s' : eur(stats.spent)+' / '+eur(env.budget)}</div>
+        <div class="mono" style="font-size:13px;color:#6B6459;margin-top:2px;">${env.rollover ? eur(remaining)+' / '+eur(stats.allocated)+' disponibles' : eur(stats.spent)+' / '+eur(env.budget)}</div>
+        ${env.rollover && stats.carry !== 0 ? `<div class="mono" style="font-size:11px;color:#8B8574;margin-top:2px;">${carryLabel(stats.carry)}</div>` : ''}
         <div class="track"><div class="fill" style="width:${Math.min(pct,100)}%;background:${barColor}"></div></div>
         <div class="mono" style="font-size:12px;margin-top:6px;color:${remaining<0?'#C1502E':'#3B6D11'}">
           ${remaining>=0 ? eur(remaining)+' restants' : eur(Math.abs(remaining))+' de d\u00e9passement'}
@@ -274,7 +297,7 @@ function renderEnveloppes() {
     </div>
     <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:#6B6459;">
       <input type="checkbox" id="envRollover" style="width:auto;">
-      Cumuler le reste non d\u00e9pens\u00e9 d'un mois sur l'autre
+      Reporter le reste (ou le d\u00e9passement) sur le mois suivant
     </label>
     <button class="btn" id="addEnvBtn" style="margin-top:10px;">Ajouter l'enveloppe</button>
     <div class="mono" style="font-size:12px;margin-top:10px;color:${un<0?'#C1502E':'#8B8574'}">
@@ -289,7 +312,7 @@ function renderEnveloppes() {
     const editing = editBudgetId === env.id;
     const txs = monthTx().filter(t=>t.envelopeId===env.id).slice(0,8);
     const budgetLine = env.rollover
-      ? `${eur(stats.spentThisMonth)} ce mois-ci \u00b7 ${eur(stats.spent)} / ${eur(stats.allocated)} cumul\u00e9s (${stats.months} mois) \u00b7 ${remaining>=0 ? eur(remaining)+' restants' : 'd\u00e9pass\u00e9 de '+eur(Math.abs(remaining))}`
+      ? `${eur(stats.spentThisMonth)} d\u00e9pens\u00e9s ce mois-ci \u00b7 ${eur(remaining)} / ${eur(stats.allocated)} disponibles${stats.carry !== 0 ? ' \u00b7 '+carryLabel(stats.carry) : ''}`
       : `${eur(stats.spent)} / ${eur(env.budget)} \u00b7 ${remaining>=0 ? eur(remaining)+' restants' : 'd\u00e9pass\u00e9 de '+eur(Math.abs(remaining))}`;
     html += `
     <div class="card">
@@ -306,7 +329,7 @@ function renderEnveloppes() {
               </div>
               <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:#6B6459;">
                 <input type="checkbox" id="editRolloverInput-${env.id}" style="width:auto;" ${env.rollover ? 'checked' : ''}>
-                Cumuler le reste non d\u00e9pens\u00e9 d'un mois sur l'autre
+                Reporter le reste (ou le d\u00e9passement) sur le mois suivant
               </label>
             </div>
           ` : `<div class="mono" style="font-size:12px;color:#6B6459;">${budgetLine}</div>`}
